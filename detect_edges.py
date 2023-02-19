@@ -3,47 +3,62 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 
-def get_edges(file=0, skip=1):
-    cap = cv2.VideoCapture(file)
-    if not cap.isOpened():
-        raise RuntimeError("Could not open video stream")  # something's gone terribly wrong!
+from helpers import read_video, write_video
 
-    # read video into list
-    frames = []
-    count = -1  # -1 because we add before checking, and i want to include frame 0
-    while cap.isOpened():
-        ret, frame = cap.read()
+# get our mask as a one bit np array
+mask = Image.open("mask_2.png")
+mask = mask.convert("1")
+mask = np.array(mask)
+print("opened mask")
 
-        # only on selected frames
-        count += 1
-        if count % skip != 0:
-            continue
+frames = read_video("sdp_video_2.mp4", skip=3)
+print(f"read {len(frames)} frames")
 
-        # if read correctly
-        if ret:
-            # canny edge detection, parameters threshold and dy need to be tweaked manually
-            edges = cv2.Canny(frame, 100, 200)
-            frames.append(edges)
-        else:
-            # capture says we're finished reading
-            break
-    # np array is easier to work with
-    frames = np.array(frames, dtype="int16")
-    # we're done with the video stream now thank you
-    cap.release()
-    return frames
+# run edge detection on each frame
+edges = [cv2.Canny(f, 80, 110) for f in frames]
+edges_masked = [e*mask for e in edges]
+print("finished edge detection")
 
 
-if __name__ == "__main__":
-    # get our mask as a one bit np array
-    mask = Image.open("mask_2.png")
-    mask = mask.convert("1")
-    mask = np.array(mask)
+# invert, convert to BGR
+edges_video = np.array([np.repeat(255-e[:, :, None], 3, axis=2) for e in edges_masked])
+# generating final output video
+video_width = edges[0].shape[1]
+video_height = edges[0].shape[0]
+video_frames = len(edges)
+output_video = []
 
-    edges = get_edges("sdp_video_2.mp4", skip=100)
+# for plotting
+fig = plt.figure(figsize=(8, 16*video_height/video_width), dpi=video_width/16)
+ax = fig.subplots(2)
 
-    fig, ax = plt.subplots(1,2)
-    for e in edges:
-        ax[0].imshow(e)
-        ax[1].imshow(e*mask)
-        plt.show()
+# calculate edge lengths
+# this is a proxy for contact line length
+edge_lengths = [np.sum(e)/255 for e in edges_masked]
+ax[0].set_xlim([0, len(edge_lengths)])
+ax[0].set_ylim([0, max(edge_lengths)])
+
+# calculate how much its changed from the beginning
+# this is a proxy for displaced volume
+# take min instead of using abs because of uint8 underflow
+deltas = [np.sum(np.min([f-frames[0], frames[0]-f], axis=0)) for f in frames]
+ax[1].set_xlim([0, len(deltas)])
+ax[1].set_ylim([0, max(deltas)])
+
+for i in range(video_frames):
+    # generate plot
+    ax[0].plot(edge_lengths[:i+1], "b")
+    ax[1].plot(deltas[:i+1], "b")
+    fig.canvas.draw()
+    # get canvas as RGB and then convert to BGR
+    plot = np.asarray(fig.canvas.buffer_rgba())[:, :, 2::-1]
+    # add quadrants together, halving where necessary
+    frame = np.append(
+        np.append(edges_video[i][::2, ::2, :], frames[i][::2, ::2, :], axis=0),
+        plot,
+        axis=1)
+    output_video.append(frame)
+
+write_video("output.mp4", edges_video, 10)
+write_video("combined_output.mp4", output_video, 10)
+print("finished writing video")
