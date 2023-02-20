@@ -11,8 +11,12 @@ mask = mask.convert("1")
 mask = np.array(mask)
 print("opened mask")
 
-frames = read_video("sdp_video_2.mp4", skip=3)
+# read video frames
+SKIP_FRAMES = 3
+frames = read_video("sdp_video_2.mp4")
+frames = frames[::SKIP_FRAMES]
 print(f"read {len(frames)} frames")
+
 
 # run edge detection on each frame
 edges = [cv2.Canny(f, 80, 110) for f in frames]
@@ -28,37 +32,57 @@ video_height = edges[0].shape[0]
 video_frames = len(edges)
 output_video = []
 
-# for plotting
-fig = plt.figure(figsize=(8, 16*video_height/video_width), dpi=video_width/16)
-ax = fig.subplots(2)
+
+# calculate number of pixels changed from the beginning
+# this is a proxy for displaced volume
+frame_0 = cv2.cvtColor(frames[0], cv2.COLOR_BGR2GRAY).astype("int16")
+deltas = [np.sum(np.abs(frame_0-cv2.cvtColor(f, cv2.COLOR_BGR2GRAY))*mask > 10) for f in frames]
+print("calculated deltas")
 
 # calculate edge lengths
 # this is a proxy for contact line length
 edge_lengths = [np.sum(e)/255 for e in edges_masked]
-ax[0].set_xlim([0, len(edge_lengths)])
-ax[0].set_ylim([0, max(edge_lengths)])
+print("calculated edge lengths")
 
-# calculate how much its changed from the beginning
-# this is a proxy for displaced volume
-# take min instead of using abs because of uint8 underflow
-deltas = [np.sum(np.min([f-frames[0], frames[0]-f], axis=0)) for f in frames]
-ax[1].set_xlim([0, len(deltas)])
-ax[1].set_ylim([0, max(deltas)])
 
+# preapre stuff for plotting
+# updating the line data directly is faster than making a new plot, but the code is a bit contrived
+fig = plt.figure(figsize=(8, 16*video_height/video_width), dpi=video_width/16)
+ax = fig.subplots(2)
+#
+ax[0].set_xlim([0, len(deltas)])
+ax[0].set_ylim([0, max(deltas)])
+ax[0].set_title("Displaced area")
+data0 = [None]*video_frames
+line0, = ax[0].plot(data0)
+
+ax[1].set_xlim([0, len(edge_lengths)])
+ax[1].set_ylim([0, max(edge_lengths)])
+ax[1].set_title("Contact line length")
+data1 = [None]*video_frames
+line1, = ax[1].plot(data1)
+
+
+# generate the final video
 for i in range(video_frames):
-    # generate plot
-    ax[0].plot(edge_lengths[:i+1], "b")
-    ax[1].plot(deltas[:i+1], "b")
+    # update plots
+    data0[:i+1] = deltas[:i+1]
+    line0.set_ydata(data0)
+    data1[:i+1] = edge_lengths[:i+1]
+    line1.set_ydata(data1)
     fig.canvas.draw()
     # get canvas as RGB and then convert to BGR
     plot = np.asarray(fig.canvas.buffer_rgba())[:, :, 2::-1]
     # add quadrants together, halving where necessary
     frame = np.append(
-        np.append(edges_video[i][::2, ::2, :], frames[i][::2, ::2, :], axis=0),
+        np.append(frames[i][::2, ::2, :], edges_video[i][::2, ::2, :], axis=0),
         plot,
         axis=1)
     output_video.append(frame)
 
-write_video("output.mp4", edges_video, 10)
-write_video("combined_output.mp4", output_video, 10)
+
+# save everything to disk
+# disk? really? what year is it? can you even BUY laptops with HDDs anymore?
+write_video("output.mp4", edges_video, 30/SKIP_FRAMES)
+write_video("combined_output.mp4", output_video, 30/SKIP_FRAMES)
 print("finished writing video")
